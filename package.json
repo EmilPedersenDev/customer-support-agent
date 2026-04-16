@@ -1,0 +1,11 @@
+{
+  "name": "customer-support-agent",
+  "private": true,
+  "packageManager": "pnpm@9.15.4",
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "dev": "pnpm -r --parallel dev"
+  }
+}
