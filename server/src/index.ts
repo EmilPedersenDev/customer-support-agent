@@ -5,7 +5,10 @@ import { Readable } from "node:stream";
 import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import { pipeline } from "node:stream/promises";
 
+import { embedBatch } from "./ingest/embed.ts";
 import { ingestMarkdown } from "./ingest/pipeline.ts";
+import { buildRagMessages } from "./rag/prompt.ts";
+import { retrieveContext } from "./rag/retrieve.ts";
 
 const app = express();
 const port = Number(process.env.PORT) || 3000;
@@ -137,6 +140,16 @@ app.use(
 app.use(express.json());
 
 app.post("/api/chat", async (req, res) => {
+  const customerId = (req.body as { customerId?: unknown })?.customerId;
+  if (
+    typeof customerId !== "number" ||
+    !Number.isInteger(customerId) ||
+    customerId <= 0
+  ) {
+    res.status(400).json({ error: "`customerId` must be a positive integer" });
+    return;
+  }
+
   const parsed = parseChatMessages(req.body);
   if (!parsed.ok) {
     res.status(400).json({ error: parsed.error });
@@ -144,6 +157,21 @@ app.post("/api/chat", async (req, res) => {
   }
 
   const { messages } = parsed;
+
+  const lastUserContent = messages[messages.length - 1].content;
+
+  let augmentedMessages;
+  try {
+    const [queryEmbedding] = await embedBatch([lastUserContent]);
+    const rows = await retrieveContext(customerId, queryEmbedding, 5);
+    const chunks = rows.map((r) => r.content);
+    augmentedMessages = buildRagMessages(chunks, messages);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "RAG retrieval failed";
+    console.error("RAG error:", e);
+    res.status(500).json({ error: message });
+    return;
+  }
 
   const controller = new AbortController();
   const abort = () => controller.abort();
@@ -156,7 +184,7 @@ app.post("/api/chat", async (req, res) => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: ollamaModel,
-        messages,
+        messages: augmentedMessages,
         stream: true,
       }),
       signal: controller.signal,
